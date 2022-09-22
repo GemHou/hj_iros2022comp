@@ -39,40 +39,14 @@ finally:
     print("Module 'cffirmware' available:", FIRMWARE_INSTALLED)
 
 
-def run(test=False):
-    """The main function creating, running, and closing an environment over N episodes.
-
-    """
-
-    # Start a timer.
-    START = time.time()
-
-    # Load configuration.
-    CONFIG_FACTORY = ConfigFactory()
-    config = CONFIG_FACTORY.merge()
-
-    # Testing (without pycffirmware).
-    if test:
-        config['use_firmware'] = False
-        config['verbose'] = False
-        config.quadrotor_config['ctrl_freq'] = 60
-        config.quadrotor_config['pyb_freq'] = 240
-        config.quadrotor_config['gui'] = False
-
-    # Check firmware configuration.
-    if config.use_firmware and not FIRMWARE_INSTALLED:
-        raise RuntimeError("[ERROR] Module 'cffirmware' not installed.")
-    CTRL_FREQ = config.quadrotor_config['ctrl_freq']
-    CTRL_DT = 1 / CTRL_FREQ
-
-    # Create environment.
+def create_env(CTRL_DT, CTRL_FREQ, config):
     if config.use_firmware:
         FIRMWARE_FREQ = 500
         assert (config.quadrotor_config[
                     'pyb_freq'] % FIRMWARE_FREQ == 0), "pyb_freq must be a multiple of firmware freq"
-        # The env.step is called at a firmware_freq rate, but this is not as intuitive to the end user, and so 
-        # we abstract the difference. This allows ctrl_freq to be the rate at which the user sends ctrl signals, 
-        # not the firmware. 
+        # The env.step is called at a firmware_freq rate, but this is not as intuitive to the end user, and so
+        # we abstract the difference. This allows ctrl_freq to be the rate at which the user sends ctrl signals,
+        # not the firmware.
         config.quadrotor_config['ctrl_freq'] = FIRMWARE_FREQ
         env_func = partial(make, 'quadrotor', **config.quadrotor_config)
         firmware_wrapper = make('firmware',
@@ -86,29 +60,10 @@ def run(test=False):
         env = make('quadrotor', **config.quadrotor_config)
         # Reset the environment, obtain the initial observations and info dictionary.
         obs, info = env.reset()
+    return env, firmware_wrapper, info, obs
 
-    # Create controller.
-    vicon_obs = [obs[0], 0, obs[2], 0, obs[4], 0, obs[6], obs[7], obs[8], 0, 0, 0]
-    # obs = {x, x_dot, y, y_dot, z, z_dot, phi, theta, psi, p, q, r}.
-    # vicon_obs = {x, 0, y, 0, z, 0, phi, theta, psi, 0, 0, 0}.
-    ctrl = Controller(vicon_obs, info, config.use_firmware, verbose=config.verbose)
 
-    # Create a logger and counters
-    logger = Logger(logging_freq_hz=CTRL_FREQ)
-    episodes_count = 1
-    cumulative_reward = 0
-    collisions_count = 0
-    collided_objects = set()
-    violations_count = 0
-    episode_start_iter = 0
-    time_label_id = p.addUserDebugText("", textPosition=[0, 0, 1], physicsClientId=env.PYB_CLIENT)
-    num_of_gates = len(config.quadrotor_config.gates)
-    stats = []
-
-    # Wait for keyboard input to start.
-    # input("Press any key to start")
-
-    # Initial printouts.
+def init_printouts(config, env, info, obs):
     if config.verbose:
         print('\tInitial observation [x, 0, y, 0, z, 0, phi, theta, psi, 0, 0, 0]: ' + str(obs))
         print('\tControl timestep: ' + str(info['ctrl_timestep']))
@@ -139,7 +94,152 @@ def run(test=False):
         for fun in info['symbolic_constraints']:
             print('\t' + str(inspect.getsource(fun)).strip('\n'))
 
-    # Run an experiment.
+
+def compute_input(config, ctrl, curr_time, env, firmware_wrapper, first_ep_iteration, info, obs):
+    if config.use_firmware:
+        vicon_obs = [obs[0], 0, obs[2], 0, obs[4], 0, obs[6], obs[7], obs[8], 0, 0, 0]
+        # obs = {x, x_dot, y, y_dot, z, z_dot, phi, theta, psi, p, q, r}.
+        # vicon_obs = {x, 0, y, 0, z, 0, phi, theta, psi, 0, 0, 0}.
+        if first_ep_iteration:
+            action = np.zeros(4)
+            reward = 0
+            done = False
+            info = {}
+            first_ep_iteration = False
+        command_type, args = ctrl.cmdFirmware(curr_time, vicon_obs, reward, done, info)
+
+        # Select interface.
+        if command_type == Command.FULLSTATE:
+            firmware_wrapper.sendFullStateCmd(*args, curr_time)
+        elif command_type == Command.TAKEOFF:
+            firmware_wrapper.sendTakeoffCmd(*args)
+        elif command_type == Command.LAND:
+            firmware_wrapper.sendLandCmd(*args)
+        elif command_type == Command.STOP:
+            firmware_wrapper.sendStopCmd()
+        elif command_type == Command.GOTO:
+            firmware_wrapper.sendGotoCmd(*args)
+        elif command_type == Command.NOTIFYSETPOINTSTOP:
+            firmware_wrapper.notifySetpointStop()
+        elif command_type == Command.NONE:
+            pass
+        else:
+            raise ValueError("[ERROR] Invalid command_type.")
+
+        # Step the environment.
+        obs, reward, done, info, action = firmware_wrapper.step(curr_time, action)
+    else:
+        if first_ep_iteration:
+            reward = 0
+            done = False
+            info = {}
+            first_ep_iteration = False
+        target_pos, target_vel = ctrl.cmdSimOnly(curr_time, obs, reward, done, info)
+        action = thrusts(ctrl.ctrl, ctrl.CTRL_TIMESTEP, ctrl.KF, obs, target_pos, target_vel)
+        obs, reward, done, info = env.step(action)
+    return action, done, info, obs, reward
+
+
+def reset_env(CTRL_FREQ, collided_objects, collisions_count, config, ctrl, cumulative_reward, curr_time, done, env,
+              ep_start, episode_start_iter, episodes_count, firmware_wrapper, first_ep_iteration, i, info, logger,
+              num_of_gates, stats, test, violations_count):
+    break_flag = False
+    if done:
+        # Plot logging (comment as desired).
+        if not test:
+            logger.plot(comment="get_start-episode-" + str(episodes_count), autoclose=True)
+
+        # CSV save.
+        logger.save_as_csv(comment="get_start-episode-" + str(episodes_count))
+
+        # Update the controller internal state and models.
+        ctrl.interEpisodeLearn()
+
+        # Append episode stats.
+        if info['current_target_gate_id'] == -1:
+            gates_passed = num_of_gates
+        else:
+            gates_passed = info['current_target_gate_id']
+        if config.quadrotor_config.done_on_collision and info["collision"][1]:
+            termination = 'COLLISION'
+        elif config.quadrotor_config.done_on_completion and info['task_completed']:
+            termination = 'TASK COMPLETION'
+        elif config.quadrotor_config.done_on_violation and info['constraint_violation']:
+            termination = 'CONSTRAINT VIOLATION'
+        else:
+            termination = 'MAX EPISODE DURATION'
+        if ctrl.interstep_learning_occurrences != 0:
+            interstep_learning_avg = ctrl.interstep_learning_time / ctrl.interstep_learning_occurrences
+        else:
+            interstep_learning_avg = ctrl.interstep_learning_time
+        episode_stats = [
+            '[yellow]Flight time (s): ' + str(curr_time),
+            '[yellow]Reason for termination: ' + termination,
+            '[green]Gates passed: ' + str(gates_passed),
+            '[green]Total reward: ' + str(cumulative_reward),
+            '[red]Number of collisions: ' + str(collisions_count),
+            '[red]Number of constraint violations: ' + str(violations_count),
+            '[white]Total and average interstep learning time (s): ' + str(
+                ctrl.interstep_learning_time) + ', ' + str(interstep_learning_avg),
+            '[white]Interepisode learning time (s): ' + str(ctrl.interepisode_learning_time),
+        ]
+        stats.append(episode_stats)
+
+        # Create a new logger.
+        logger = Logger(logging_freq_hz=CTRL_FREQ)
+
+        # Reset/update counters.
+        episodes_count += 1
+        if episodes_count > config.num_episodes:
+            break_flag = True
+        cumulative_reward = 0
+        collisions_count = 0
+        collided_objects = set()
+        violations_count = 0
+        ctrl.interEpisodeReset()
+
+        # Reset the environment.
+        if config.use_firmware:
+            # Re-initialize firmware.
+            new_initial_obs, _ = firmware_wrapper.reset()
+        else:
+            new_initial_obs, _ = env.reset()
+        first_ep_iteration = True
+
+        if config.verbose:
+            print(str(episodes_count) + '-th reset.')
+            print('Reset obs' + str(new_initial_obs))
+
+        episode_start_iter = i + 1
+        ep_start = time.time()
+    return break_flag, collided_objects, collisions_count, cumulative_reward, ep_start, episode_start_iter, first_ep_iteration, logger, violations_count
+
+
+def printout(CTRL_FREQ, action, collided_objects, collisions_count, config, cumulative_reward, done, i, info, obs,
+             reward):
+    if config.verbose and i % int(CTRL_FREQ / 2) == 0:
+        print('\n' + str(i) + '-th step.')
+        print('\tApplied action: ' + str(action))
+        print('\tObservation: ' + str(obs))
+        print('\tReward: ' + str(reward) + ' (Cumulative: ' + str(cumulative_reward) + ')')
+        print('\tDone: ' + str(done))
+        print('\tCurrent target gate ID: ' + str(info['current_target_gate_id']))
+        print('\tCurrent target gate type: ' + str(info['current_target_gate_type']))
+        print('\tCurrent target gate in range: ' + str(info['current_target_gate_in_range']))
+        print('\tCurrent target gate position: ' + str(info['current_target_gate_pos']))
+        print('\tAt goal position: ' + str(info['at_goal_position']))
+        print('\tTask completed: ' + str(info['task_completed']))
+        if 'constraint_values' in info:
+            print('\tConstraints evaluations: ' + str(info['constraint_values']))
+            print('\tConstraints violation: ' + str(bool(info['constraint_violation'])))
+        print('\tCollision: ' + str(info["collision"]))
+        print('\tTotal collisions: ' + str(collisions_count))
+        print('\tCollided objects (history): ' + str(collided_objects))
+
+
+def run_exp(CTRL_DT, CTRL_FREQ, collided_objects, collisions_count, config, ctrl, cumulative_reward, env,
+            episode_start_iter, episodes_count, firmware_wrapper, info, logger, num_of_gates, obs, stats, test,
+            time_label_id, violations_count):
     ep_start = time.time()
     first_ep_iteration = True
     for i in range(config.num_episodes * CTRL_FREQ * env.EPISODE_LEN_SEC):
@@ -162,47 +262,8 @@ def run(test=False):
                                            physicsClientId=env.PYB_CLIENT)
 
         # Compute control input.
-        if config.use_firmware:
-            vicon_obs = [obs[0], 0, obs[2], 0, obs[4], 0, obs[6], obs[7], obs[8], 0, 0, 0]
-            # obs = {x, x_dot, y, y_dot, z, z_dot, phi, theta, psi, p, q, r}.
-            # vicon_obs = {x, 0, y, 0, z, 0, phi, theta, psi, 0, 0, 0}.
-            if first_ep_iteration:
-                action = np.zeros(4)
-                reward = 0
-                done = False
-                info = {}
-                first_ep_iteration = False
-            command_type, args = ctrl.cmdFirmware(curr_time, vicon_obs, reward, done, info)
-
-            # Select interface.
-            if command_type == Command.FULLSTATE:
-                firmware_wrapper.sendFullStateCmd(*args, curr_time)
-            elif command_type == Command.TAKEOFF:
-                firmware_wrapper.sendTakeoffCmd(*args)
-            elif command_type == Command.LAND:
-                firmware_wrapper.sendLandCmd(*args)
-            elif command_type == Command.STOP:
-                firmware_wrapper.sendStopCmd()
-            elif command_type == Command.GOTO:
-                firmware_wrapper.sendGotoCmd(*args)
-            elif command_type == Command.NOTIFYSETPOINTSTOP:
-                firmware_wrapper.notifySetpointStop()
-            elif command_type == Command.NONE:
-                pass
-            else:
-                raise ValueError("[ERROR] Invalid command_type.")
-
-            # Step the environment.
-            obs, reward, done, info, action = firmware_wrapper.step(curr_time, action)
-        else:
-            if first_ep_iteration:
-                reward = 0
-                done = False
-                info = {}
-                first_ep_iteration = False
-            target_pos, target_vel = ctrl.cmdSimOnly(curr_time, obs, reward, done, info)
-            action = thrusts(ctrl.ctrl, ctrl.CTRL_TIMESTEP, ctrl.KF, obs, target_pos, target_vel)
-            obs, reward, done, info = env.step(action)
+        action, done, info, obs, reward = compute_input(config, ctrl, curr_time, env, firmware_wrapper,
+                                                        first_ep_iteration, info, obs)
 
         # Update the controller internal state and models.
         ctrl.interStepLearn(action, obs, reward, done, info)
@@ -216,24 +277,8 @@ def run(test=False):
             violations_count += 1
 
         # Printouts.
-        if config.verbose and i % int(CTRL_FREQ / 2) == 0:
-            print('\n' + str(i) + '-th step.')
-            print('\tApplied action: ' + str(action))
-            print('\tObservation: ' + str(obs))
-            print('\tReward: ' + str(reward) + ' (Cumulative: ' + str(cumulative_reward) + ')')
-            print('\tDone: ' + str(done))
-            print('\tCurrent target gate ID: ' + str(info['current_target_gate_id']))
-            print('\tCurrent target gate type: ' + str(info['current_target_gate_type']))
-            print('\tCurrent target gate in range: ' + str(info['current_target_gate_in_range']))
-            print('\tCurrent target gate position: ' + str(info['current_target_gate_pos']))
-            print('\tAt goal position: ' + str(info['at_goal_position']))
-            print('\tTask completed: ' + str(info['task_completed']))
-            if 'constraint_values' in info:
-                print('\tConstraints evaluations: ' + str(info['constraint_values']))
-                print('\tConstraints violation: ' + str(bool(info['constraint_violation'])))
-            print('\tCollision: ' + str(info["collision"]))
-            print('\tTotal collisions: ' + str(collisions_count))
-            print('\tCollided objects (history): ' + str(collided_objects))
+        printout(CTRL_FREQ, action, collided_objects, collisions_count, config, cumulative_reward, done, i, info, obs,
+                 reward)
 
         # Log data.
         pos = [obs[0], obs[2], obs[4]]
@@ -250,77 +295,17 @@ def run(test=False):
             sync(i - episode_start_iter, ep_start, CTRL_DT)
 
         # If an episode is complete, reset the environment.
-        if done:
-            # Plot logging (comment as desired).
-            if not test:
-                logger.plot(comment="get_start-episode-" + str(episodes_count), autoclose=True)
+        break_flag, collided_objects, collisions_count, cumulative_reward, ep_start, episode_start_iter, first_ep_iteration, logger, violations_count = reset_env(
+            CTRL_FREQ, collided_objects, collisions_count, config, ctrl, cumulative_reward, curr_time, done, env,
+            ep_start, episode_start_iter, episodes_count, firmware_wrapper, first_ep_iteration, i, info, logger,
+            num_of_gates, stats, test, violations_count)
+        if break_flag:
+            break
+    return i
 
-            # CSV save.
-            logger.save_as_csv(comment="get_start-episode-" + str(episodes_count))
 
-            # Update the controller internal state and models.
-            ctrl.interEpisodeLearn()
-
-            # Append episode stats.
-            if info['current_target_gate_id'] == -1:
-                gates_passed = num_of_gates
-            else:
-                gates_passed = info['current_target_gate_id']
-            if config.quadrotor_config.done_on_collision and info["collision"][1]:
-                termination = 'COLLISION'
-            elif config.quadrotor_config.done_on_completion and info['task_completed']:
-                termination = 'TASK COMPLETION'
-            elif config.quadrotor_config.done_on_violation and info['constraint_violation']:
-                termination = 'CONSTRAINT VIOLATION'
-            else:
-                termination = 'MAX EPISODE DURATION'
-            if ctrl.interstep_learning_occurrences != 0:
-                interstep_learning_avg = ctrl.interstep_learning_time / ctrl.interstep_learning_occurrences
-            else:
-                interstep_learning_avg = ctrl.interstep_learning_time
-            episode_stats = [
-                '[yellow]Flight time (s): ' + str(curr_time),
-                '[yellow]Reason for termination: ' + termination,
-                '[green]Gates passed: ' + str(gates_passed),
-                '[green]Total reward: ' + str(cumulative_reward),
-                '[red]Number of collisions: ' + str(collisions_count),
-                '[red]Number of constraint violations: ' + str(violations_count),
-                '[white]Total and average interstep learning time (s): ' + str(
-                    ctrl.interstep_learning_time) + ', ' + str(interstep_learning_avg),
-                '[white]Interepisode learning time (s): ' + str(ctrl.interepisode_learning_time),
-            ]
-            stats.append(episode_stats)
-
-            # Create a new logger.
-            logger = Logger(logging_freq_hz=CTRL_FREQ)
-
-            # Reset/update counters.
-            episodes_count += 1
-            if episodes_count > config.num_episodes:
-                break
-            cumulative_reward = 0
-            collisions_count = 0
-            collided_objects = set()
-            violations_count = 0
-            ctrl.interEpisodeReset()
-
-            # Reset the environment.
-            if config.use_firmware:
-                # Re-initialize firmware.
-                new_initial_obs, _ = firmware_wrapper.reset()
-            else:
-                new_initial_obs, _ = env.reset()
-            first_ep_iteration = True
-
-            if config.verbose:
-                print(str(episodes_count) + '-th reset.')
-                print('Reset obs' + str(new_initial_obs))
-
-            episode_start_iter = i + 1
-            ep_start = time.time()
-
-    # Close the environment and print timing statistics.
-    env.close()
+def final_print(CTRL_DT, START, config, env, i, stats):
+    # Print timing statistics.
     elapsed_sec = time.time() - START
     print(
         str("\n{:d} iterations (@{:d}Hz) and {:d} episodes in {:.2f} sec, i.e. {:.2f} steps/sec for a {:.2f}x speedup.\n"
@@ -332,7 +317,6 @@ def run(test=False):
                     (i * CTRL_DT) / elapsed_sec
                     )
             ))
-
     # Print episodes summary.
     tree = Tree("Summary")
     for idx, ep in enumerate(stats):
@@ -344,5 +328,74 @@ def run(test=False):
     print('\n\n')
 
 
-if __name__ == "__main__":
+def run(test=False):
+    """The main function creating, running, and closing an environment over N episodes.
+
+    """
+
+    # Start a timer.
+    START = time.time()
+
+    # Load configuration.
+    CONFIG_FACTORY = ConfigFactory()
+    config = CONFIG_FACTORY.merge()
+
+    # Testing (without pycffirmware).
+    if test:
+        config['use_firmware'] = False
+        config['verbose'] = False
+        config.quadrotor_config['ctrl_freq'] = 60
+        config.quadrotor_config['pyb_freq'] = 240
+        config.quadrotor_config['gui'] = False
+
+    # Check firmware configuration.
+    if config.use_firmware and not FIRMWARE_INSTALLED:
+        raise RuntimeError("[ERROR] Module 'cffirmware' not installed.")
+    CTRL_FREQ = config.quadrotor_config['ctrl_freq']
+    CTRL_DT = 1 / CTRL_FREQ
+
+    # Create environment.
+    env, firmware_wrapper, info, obs = create_env(CTRL_DT, CTRL_FREQ, config)
+
+    # Create controller.
+    vicon_obs = [obs[0], 0, obs[2], 0, obs[4], 0, obs[6], obs[7], obs[8], 0, 0, 0]
+    # obs = {x, x_dot, y, y_dot, z, z_dot, phi, theta, psi, p, q, r}.
+    # vicon_obs = {x, 0, y, 0, z, 0, phi, theta, psi, 0, 0, 0}.
+    ctrl = Controller(vicon_obs, info, config.use_firmware, verbose=config.verbose)
+
+    # Create a logger and counters
+    logger = Logger(logging_freq_hz=CTRL_FREQ)
+    episodes_count = 1
+    cumulative_reward = 0
+    collisions_count = 0
+    collided_objects = set()
+    violations_count = 0
+    episode_start_iter = 0
+    time_label_id = p.addUserDebugText("", textPosition=[0, 0, 1], physicsClientId=env.PYB_CLIENT)
+    num_of_gates = len(config.quadrotor_config.gates)
+    stats = []
+
+    # Wait for keyboard input to start.
+    # input("Press any key to start")
+
+    # Initial printouts.
+    init_printouts(config, env, info, obs)
+
+    # Run an experiment.
+    i = run_exp(CTRL_DT, CTRL_FREQ, collided_objects, collisions_count, config, ctrl, cumulative_reward, env,
+                episode_start_iter, episodes_count, firmware_wrapper, info, logger, num_of_gates, obs, stats, test,
+                time_label_id, violations_count)
+
+    # Close the environment.
+    env.close()
+
+    # Final print
+    final_print(CTRL_DT, START, config, env, i, stats)
+
+
+def main():
     run()
+
+
+if __name__ == "__main__":
+    main()
