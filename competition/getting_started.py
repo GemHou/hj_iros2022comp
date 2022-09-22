@@ -63,20 +63,21 @@ def run(test=False):
     if config.use_firmware and not FIRMWARE_INSTALLED:
         raise RuntimeError("[ERROR] Module 'cffirmware' not installed.")
     CTRL_FREQ = config.quadrotor_config['ctrl_freq']
-    CTRL_DT = 1/CTRL_FREQ
+    CTRL_DT = 1 / CTRL_FREQ
 
     # Create environment.
     if config.use_firmware:
         FIRMWARE_FREQ = 500
-        assert(config.quadrotor_config['pyb_freq'] % FIRMWARE_FREQ == 0), "pyb_freq must be a multiple of firmware freq"
+        assert (config.quadrotor_config[
+                    'pyb_freq'] % FIRMWARE_FREQ == 0), "pyb_freq must be a multiple of firmware freq"
         # The env.step is called at a firmware_freq rate, but this is not as intuitive to the end user, and so 
         # we abstract the difference. This allows ctrl_freq to be the rate at which the user sends ctrl signals, 
         # not the firmware. 
         config.quadrotor_config['ctrl_freq'] = FIRMWARE_FREQ
         env_func = partial(make, 'quadrotor', **config.quadrotor_config)
         firmware_wrapper = make('firmware',
-                    env_func, FIRMWARE_FREQ, CTRL_FREQ
-                    ) 
+                                env_func, FIRMWARE_FREQ, CTRL_FREQ
+                                )
         obs, info = firmware_wrapper.reset()
         info['ctrl_timestep'] = CTRL_DT
         info['ctrl_freq'] = CTRL_FREQ
@@ -85,11 +86,11 @@ def run(test=False):
         env = make('quadrotor', **config.quadrotor_config)
         # Reset the environment, obtain the initial observations and info dictionary.
         obs, info = env.reset()
-    
+
     # Create controller.
     vicon_obs = [obs[0], 0, obs[2], 0, obs[4], 0, obs[6], obs[7], obs[8], 0, 0, 0]
-        # obs = {x, x_dot, y, y_dot, z, z_dot, phi, theta, psi, p, q, r}.
-        # vicon_obs = {x, 0, y, 0, z, 0, phi, theta, psi, 0, 0, 0}.
+    # obs = {x, x_dot, y, y_dot, z, z_dot, phi, theta, psi, p, q, r}.
+    # vicon_obs = {x, 0, y, 0, z, 0, phi, theta, psi, 0, 0, 0}.
     ctrl = Controller(vicon_obs, info, config.use_firmware, verbose=config.verbose)
 
     # Create a logger and counters
@@ -100,7 +101,7 @@ def run(test=False):
     collided_objects = set()
     violations_count = 0
     episode_start_iter = 0
-    time_label_id = p.addUserDebugText("", textPosition=[0, 0, 1],physicsClientId=env.PYB_CLIENT)
+    time_label_id = p.addUserDebugText("", textPosition=[0, 0, 1], physicsClientId=env.PYB_CLIENT)
     num_of_gates = len(config.quadrotor_config.gates)
     stats = []
 
@@ -118,10 +119,12 @@ def run(test=False):
         print('\tObstacles properties: ' + str(info['obstacle_dimensions']))
         print('\tNominal gates positions [x, y, z, r, p, y, type]: ' + str(info['nominal_gates_pos_and_type']))
         print('\tNominal obstacles positions [x, y, z, r, p, y]: ' + str(info['nominal_obstacles_pos']))
-        print('\tFinal target hover position [x, x_dot, y, y_dot, z, z_dot, phi, theta, psi, p, q, r]: ' + str(info['x_reference']))
+        print('\tFinal target hover position [x, x_dot, y, y_dot, z, z_dot, phi, theta, psi, p, q, r]: ' + str(
+            info['x_reference']))
         print('\tDistribution of the error on the initial state: ' + str(info['initial_state_randomization']))
         print('\tDistribution of the error on the inertial properties: ' + str(info['inertial_prop_randomization']))
-        print('\tDistribution of the error on positions of gates and obstacles: ' + str(info['gates_and_obs_randomization']))
+        print('\tDistribution of the error on positions of gates and obstacles: ' + str(
+            info['gates_and_obs_randomization']))
         print('\tDistribution of the disturbances: ' + str(info['disturbances']))
         print('\tA priori symbolic model:')
         print('\t\tState: ' + str(info['symbolic_model'].x_sym).strip('vertcat'))
@@ -139,19 +142,19 @@ def run(test=False):
     # Run an experiment.
     ep_start = time.time()
     first_ep_iteration = True
-    for i in range(config.num_episodes*CTRL_FREQ*env.EPISODE_LEN_SEC):
+    for i in range(config.num_episodes * CTRL_FREQ * env.EPISODE_LEN_SEC):
 
         # Step by keyboard input.
         # _ = input("Press any key to continue")
 
         # Elapsed sim time.
-        curr_time = (i-episode_start_iter)*CTRL_DT
+        curr_time = (i - episode_start_iter) * CTRL_DT
 
         # Print episode time in seconds on the GUI.
         time_label_id = p.addUserDebugText("Ep. time: {:.2f}s".format(curr_time),
                                            textPosition=[0, 0, 1.5],
                                            textColorRGB=[1, 0, 0],
-                                           lifeTime=3*CTRL_DT,
+                                           lifeTime=3 * CTRL_DT,
                                            textSize=1.5,
                                            parentObjectUniqueId=0,
                                            parentLinkIndex=-1,
@@ -161,8 +164,8 @@ def run(test=False):
         # Compute control input.
         if config.use_firmware:
             vicon_obs = [obs[0], 0, obs[2], 0, obs[4], 0, obs[6], obs[7], obs[8], 0, 0, 0]
-                # obs = {x, x_dot, y, y_dot, z, z_dot, phi, theta, psi, p, q, r}.
-                # vicon_obs = {x, 0, y, 0, z, 0, phi, theta, psi, 0, 0, 0}.
+            # obs = {x, x_dot, y, y_dot, z, z_dot, phi, theta, psi, p, q, r}.
+            # vicon_obs = {x, 0, y, 0, z, 0, phi, theta, psi, 0, 0, 0}.
             if first_ep_iteration:
                 action = np.zeros(4)
                 reward = 0
@@ -213,11 +216,11 @@ def run(test=False):
             violations_count += 1
 
         # Printouts.
-        if config.verbose and i%int(CTRL_FREQ/2) == 0:
-            print('\n'+str(i)+'-th step.')
+        if config.verbose and i % int(CTRL_FREQ / 2) == 0:
+            print('\n' + str(i) + '-th step.')
             print('\tApplied action: ' + str(action))
             print('\tObservation: ' + str(obs))
-            print('\tReward: ' + str(reward) + ' (Cumulative: ' + str(cumulative_reward) +')')
+            print('\tReward: ' + str(reward) + ' (Cumulative: ' + str(cumulative_reward) + ')')
             print('\tDone: ' + str(done))
             print('\tCurrent target gate ID: ' + str(info['current_target_gate_id']))
             print('\tCurrent target gate type: ' + str(info['current_target_gate_type']))
@@ -233,27 +236,27 @@ def run(test=False):
             print('\tCollided objects (history): ' + str(collided_objects))
 
         # Log data.
-        pos = [obs[0],obs[2],obs[4]]
-        rpy = [obs[6],obs[7],obs[8]]
-        vel = [obs[1],obs[3],obs[5]]
-        bf_rates = [obs[9],obs[10],obs[11]]
+        pos = [obs[0], obs[2], obs[4]]
+        rpy = [obs[6], obs[7], obs[8]]
+        vel = [obs[1], obs[3], obs[5]]
+        bf_rates = [obs[9], obs[10], obs[11]]
         logger.log(drone=0,
-                   timestamp=i/CTRL_FREQ,
-                   state=np.hstack([pos, np.zeros(4), rpy, vel, bf_rates, np.sqrt(action/env.KF)])
+                   timestamp=i / CTRL_FREQ,
+                   state=np.hstack([pos, np.zeros(4), rpy, vel, bf_rates, np.sqrt(action / env.KF)])
                    )
 
         # Synchronize the GUI.
         if config.quadrotor_config.gui:
-            sync(i-episode_start_iter, ep_start, CTRL_DT)
+            sync(i - episode_start_iter, ep_start, CTRL_DT)
 
         # If an episode is complete, reset the environment.
         if done:
             # Plot logging (comment as desired).
             if not test:
-                logger.plot(comment="get_start-episode-"+str(episodes_count), autoclose=True)
+                logger.plot(comment="get_start-episode-" + str(episodes_count), autoclose=True)
 
             # CSV save.
-            logger.save_as_csv(comment="get_start-episode-"+str(episodes_count))
+            logger.save_as_csv(comment="get_start-episode-" + str(episodes_count))
 
             # Update the controller internal state and models.
             ctrl.interEpisodeLearn()
@@ -272,19 +275,20 @@ def run(test=False):
             else:
                 termination = 'MAX EPISODE DURATION'
             if ctrl.interstep_learning_occurrences != 0:
-                interstep_learning_avg = ctrl.interstep_learning_time/ctrl.interstep_learning_occurrences
+                interstep_learning_avg = ctrl.interstep_learning_time / ctrl.interstep_learning_occurrences
             else:
                 interstep_learning_avg = ctrl.interstep_learning_time
             episode_stats = [
-                '[yellow]Flight time (s): '+str(curr_time),
-                '[yellow]Reason for termination: '+termination,
-                '[green]Gates passed: '+str(gates_passed),
-                '[green]Total reward: '+str(cumulative_reward),
-                '[red]Number of collisions: '+str(collisions_count),
-                '[red]Number of constraint violations: '+str(violations_count),
-                '[white]Total and average interstep learning time (s): '+str(ctrl.interstep_learning_time)+', '+str(interstep_learning_avg),
-                '[white]Interepisode learning time (s): '+str(ctrl.interepisode_learning_time),
-                ]
+                '[yellow]Flight time (s): ' + str(curr_time),
+                '[yellow]Reason for termination: ' + termination,
+                '[green]Gates passed: ' + str(gates_passed),
+                '[green]Total reward: ' + str(cumulative_reward),
+                '[red]Number of collisions: ' + str(collisions_count),
+                '[red]Number of constraint violations: ' + str(violations_count),
+                '[white]Total and average interstep learning time (s): ' + str(
+                    ctrl.interstep_learning_time) + ', ' + str(interstep_learning_avg),
+                '[white]Interepisode learning time (s): ' + str(ctrl.interepisode_learning_time),
+            ]
             stats.append(episode_stats)
 
             # Create a new logger.
@@ -309,34 +313,36 @@ def run(test=False):
             first_ep_iteration = True
 
             if config.verbose:
-                print(str(episodes_count)+'-th reset.')
+                print(str(episodes_count) + '-th reset.')
                 print('Reset obs' + str(new_initial_obs))
-            
-            episode_start_iter = i+1
+
+            episode_start_iter = i + 1
             ep_start = time.time()
 
     # Close the environment and print timing statistics.
     env.close()
     elapsed_sec = time.time() - START
-    print(str("\n{:d} iterations (@{:d}Hz) and {:d} episodes in {:.2f} sec, i.e. {:.2f} steps/sec for a {:.2f}x speedup.\n"
-          .format(i,
-                  env.CTRL_FREQ,
-                  config.num_episodes,
-                  elapsed_sec,
-                  i/elapsed_sec,
-                  (i*CTRL_DT)/elapsed_sec
-                  )
-          ))
+    print(
+        str("\n{:d} iterations (@{:d}Hz) and {:d} episodes in {:.2f} sec, i.e. {:.2f} steps/sec for a {:.2f}x speedup.\n"
+            .format(i,
+                    env.CTRL_FREQ,
+                    config.num_episodes,
+                    elapsed_sec,
+                    i / elapsed_sec,
+                    (i * CTRL_DT) / elapsed_sec
+                    )
+            ))
 
     # Print episodes summary.
     tree = Tree("Summary")
     for idx, ep in enumerate(stats):
-        ep_tree = tree.add('Episode ' + str(idx+1))
+        ep_tree = tree.add('Episode ' + str(idx + 1))
         for val in ep:
             ep_tree.add(val)
     print('\n\n')
     print(tree)
     print('\n\n')
+
 
 if __name__ == "__main__":
     run()
