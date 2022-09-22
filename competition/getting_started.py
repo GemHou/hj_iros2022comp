@@ -41,16 +41,16 @@ finally:
 
 def create_env(CTRL_DT, CTRL_FREQ, config):
     if config.use_firmware:
-        FIRMWARE_FREQ = 500
+        firmware_freq = 500
         assert (config.quadrotor_config[
-                    'pyb_freq'] % FIRMWARE_FREQ == 0), "pyb_freq must be a multiple of firmware freq"
+                    'pyb_freq'] % firmware_freq == 0), "pyb_freq must be a multiple of firmware freq"
         # The env.step is called at a firmware_freq rate, but this is not as intuitive to the end user, and so
         # we abstract the difference. This allows ctrl_freq to be the rate at which the user sends ctrl signals,
         # not the firmware.
-        config.quadrotor_config['ctrl_freq'] = FIRMWARE_FREQ
+        config.quadrotor_config['ctrl_freq'] = firmware_freq
         env_func = partial(make, 'quadrotor', **config.quadrotor_config)
         firmware_wrapper = make('firmware',
-                                env_func, FIRMWARE_FREQ, CTRL_FREQ
+                                env_func, firmware_freq, CTRL_FREQ
                                 )
         obs, info = firmware_wrapper.reset()
         info['ctrl_timestep'] = CTRL_DT
@@ -304,9 +304,9 @@ def run_exp(CTRL_DT, CTRL_FREQ, collided_objects, collisions_count, config, ctrl
     return i
 
 
-def final_print(CTRL_DT, START, config, env, i, stats):
+def final_print(CTRL_DT, start_time, config, env, i, stats):
     # Print timing statistics.
-    elapsed_sec = time.time() - START
+    elapsed_sec = time.time() - start_time
     print(
         str("\n{:d} iterations (@{:d}Hz) and {:d} episodes in {:.2f} sec, i.e. {:.2f} steps/sec for a {:.2f}x speedup.\n"
             .format(i,
@@ -329,16 +329,16 @@ def final_print(CTRL_DT, START, config, env, i, stats):
 
 
 def run(test=False):
-    """The main function creating, running, and closing an environment over N episodes.
-
+    """
+    The main function creating, running, and closing an environment over N episodes.
     """
 
     # Start a timer.
-    START = time.time()
+    start_time = time.time()
 
     # Load configuration.
-    CONFIG_FACTORY = ConfigFactory()
-    config = CONFIG_FACTORY.merge()
+    config_factory = ConfigFactory()
+    config = config_factory.merge()
 
     # Testing (without pycffirmware).
     if test:
@@ -351,11 +351,11 @@ def run(test=False):
     # Check firmware configuration.
     if config.use_firmware and not FIRMWARE_INSTALLED:
         raise RuntimeError("[ERROR] Module 'cffirmware' not installed.")
-    CTRL_FREQ = config.quadrotor_config['ctrl_freq']
-    CTRL_DT = 1 / CTRL_FREQ
+    ctrl_freq = config.quadrotor_config['ctrl_freq']
+    ctrl_dt = 1 / ctrl_freq
 
     # Create environment.
-    env, firmware_wrapper, info, obs = create_env(CTRL_DT, CTRL_FREQ, config)
+    env, firmware_wrapper, info, obs = create_env(ctrl_dt, ctrl_freq, config)
 
     # Create controller.
     vicon_obs = [obs[0], 0, obs[2], 0, obs[4], 0, obs[6], obs[7], obs[8], 0, 0, 0]
@@ -364,7 +364,7 @@ def run(test=False):
     ctrl = Controller(vicon_obs, info, config.use_firmware, verbose=config.verbose)
 
     # Create a logger and counters
-    logger = Logger(logging_freq_hz=CTRL_FREQ)
+    logger = Logger(logging_freq_hz=ctrl_freq)
     episodes_count = 1
     cumulative_reward = 0
     collisions_count = 0
@@ -382,7 +382,7 @@ def run(test=False):
     init_printouts(config, env, info, obs)
 
     # Run an experiment.
-    i = run_exp(CTRL_DT, CTRL_FREQ, collided_objects, collisions_count, config, ctrl, cumulative_reward, env,
+    i = run_exp(ctrl_dt, ctrl_freq, collided_objects, collisions_count, config, ctrl, cumulative_reward, env,
                 episode_start_iter, episodes_count, firmware_wrapper, info, logger, num_of_gates, obs, stats, test,
                 time_label_id, violations_count)
 
@@ -390,7 +390,7 @@ def run(test=False):
     env.close()
 
     # Final print
-    final_print(CTRL_DT, START, config, env, i, stats)
+    final_print(ctrl_dt, start_time, config, env, i, stats)
 
 
 def main():
