@@ -361,7 +361,7 @@ def run(test=False):
     vicon_obs = [obs[0], 0, obs[2], 0, obs[4], 0, obs[6], obs[7], obs[8], 0, 0, 0]
     # obs = {x, x_dot, y, y_dot, z, z_dot, phi, theta, psi, p, q, r}.
     # vicon_obs = {x, 0, y, 0, z, 0, phi, theta, psi, 0, 0, 0}.
-    ctrl = Controller(vicon_obs, info, config.use_firmware, verbose=config.verbose)
+    ctrl = Controller(vicon_obs, info, config.use_firmware, verbose=config.verbose)  # time!!!!!!!!!!!!!!!!!!!!!!!!!
 
     # Create a logger and counters
     logger = Logger(logging_freq_hz=ctrl_freq)
@@ -384,7 +384,7 @@ def run(test=False):
     # Run an experiment.
     i = run_exp(ctrl_dt, ctrl_freq, collided_objects, collisions_count, config, ctrl, cumulative_reward, env,
                 episode_start_iter, episodes_count, firmware_wrapper, info, logger, num_of_gates, obs, stats, test,
-                time_label_id, violations_count)
+                time_label_id, violations_count)  # time!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!
 
     # Close the environment.
     env.close()
